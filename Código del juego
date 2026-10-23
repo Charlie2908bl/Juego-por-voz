@@ -1,0 +1,692 @@
+# -*- coding: utf-8 -*-
+"""
+ECOMIND VOICE CHALLENGE
+-----------------------
+Juego de consola para la terminal de Visual Studio Code.
+
+El jugador elige un tema (15 opciones, con enfoque en cambio climatico
+e IA) y un nivel de dificultad. Ve una palabra o frase en espanol y
+debe decirla en ingles en voz alta. La app graba, transcribe, valida la
+respuesta de forma flexible y muestra un dato curioso tras cada ronda.
+
+Instalar dependencias (en la terminal de VS Code):
+    pip install sounddevice scipy numpy SpeechRecognition googletrans==4.0.0-rc1
+
+Ejecutar:
+    python ecomind_voice_challenge_vscode.py
+"""
+
+import sounddevice as sd
+import scipy.io.wavfile as wav
+import speech_recognition as sr
+from googletrans import Translator
+import random
+import re
+import os
+import unicodedata
+import difflib
+from datetime import datetime
+
+# Este truco activa los colores ANSI en la terminal de Windows.
+os.system("")
+
+
+# ============================================================
+# 0. COLORES
+# ============================================================
+
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    VERDE = "\033[92m"
+    ROJO = "\033[91m"
+    AMARILLO = "\033[93m"
+    CIAN = "\033[96m"
+    MAGENTA = "\033[95m"
+    AZUL = "\033[94m"
+    GRIS = "\033[90m"
+
+
+def c(texto, color):
+    return color + str(texto) + C.RESET
+
+
+# ============================================================
+# 1. CONFIGURACION GENERAL
+# ============================================================
+
+DURATION = 4
+SAMPLE_RATE = 44100
+ARCHIVO_PUNTAJES = "puntajes.txt"
+MAX_ERRORES = 3
+PUNTOS_POR_NIVEL = {"facil": 10, "medio": 20, "dificil": 30}
+
+# Nombres bonitos (con tilde) para mostrar en pantalla.
+# Las claves internas siguen sin tilde para evitar errores.
+NOMBRES_NIVEL = {"facil": "FÁCIL", "medio": "MEDIO", "dificil": "DIFÍCIL"}
+
+# Palabras de relleno en ingles que se ignoran al comparar, para que
+# "it's wednesday" o "today is wednesday" cuenten igual que "wednesday".
+PALABRAS_RELLENO = {
+    "it", "its", "its", "is", "a", "an", "the", "this", "that", "was",
+    "today", "todays", "im", "i", "my", "so", "here", "there",
+    "yes", "well", "um", "uh",
+}
+
+translator = Translator()
+
+
+# ============================================================
+# 2. BASE DE DATOS: 15 TEMAS, 98 PREGUNTAS, DATOS CURIOSOS
+# ============================================================
+
+TEMAS = {
+    "cambio climatico": {
+        "emoji": "🌎",
+        "nombre_visible": "Cambio climático",
+        "preguntas": [
+            {"es": "calor", "respuestas": ["heat"], "nivel": "facil"},
+            {"es": "lluvia", "respuestas": ["rain"], "nivel": "facil"},
+            {"es": "arbol", "respuestas": ["tree"], "nivel": "facil"},
+            {"es": "calentamiento global", "respuestas": ["global warming"], "nivel": "medio"},
+            {"es": "energia solar", "respuestas": ["solar energy"], "nivel": "medio"},
+            {"es": "reciclaje", "respuestas": ["recycling"], "nivel": "medio"},
+            {"es": "deforestacion", "respuestas": ["deforestation"], "nivel": "medio"},
+            {"es": "huella de carbono", "respuestas": ["carbon footprint"], "nivel": "dificil"},
+            {"es": "energia renovable", "respuestas": ["renewable energy"], "nivel": "dificil"},
+            {"es": "neutralidad de carbono", "respuestas": ["carbon neutrality"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Reforestar y restaurar bosques ayuda a capturar grandes cantidades de CO2 de la atmósfera.",
+            "Los manglares y las algas marinas capturan carbono hasta 10 veces más rápido que los bosques terrestres.",
+            "Cambiar a energías renovables como la solar y la eólica reduce directamente las emisiones de gases de efecto invernadero.",
+            "Reducir el consumo de carne ayuda a bajar la huella de carbono de la producción de alimentos.",
+            "La economía circular (reciclar, reutilizar, reparar) reduce residuos y energía usada en fabricar productos nuevos.",
+            "El Acuerdo de París busca limitar el calentamiento global a 1.5°C mediante compromisos de los países.",
+            "La movilidad eléctrica y el transporte público reducen significativamente las emisiones del sector transporte.",
+            "Mejorar la eficiencia energética de los edificios puede reducir hasta un tercio del consumo energético urbano.",
+        ],
+    },
+    "inteligencia artificial": {
+        "emoji": "🤖",
+        "nombre_visible": "Inteligencia artificial",
+        "preguntas": [
+            {"es": "robot", "respuestas": ["robot"], "nivel": "facil"},
+            {"es": "dato", "respuestas": ["data"], "nivel": "facil"},
+            {"es": "maquina", "respuestas": ["machine"], "nivel": "facil"},
+            {"es": "aprendizaje automatico", "respuestas": ["machine learning"], "nivel": "medio"},
+            {"es": "red neuronal", "respuestas": ["neural network"], "nivel": "medio"},
+            {"es": "reconocimiento de voz", "respuestas": ["speech recognition", "voice recognition"], "nivel": "medio"},
+            {"es": "chatbot", "respuestas": ["chatbot"], "nivel": "medio"},
+            {"es": "inteligencia artificial general", "respuestas": ["artificial general intelligence", "general artificial intelligence"], "nivel": "dificil"},
+            {"es": "procesamiento de lenguaje natural", "respuestas": ["natural language processing"], "nivel": "dificil"},
+            {"es": "aprendizaje profundo", "respuestas": ["deep learning"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "La IA se usa para predecir huracanes, inundaciones y otros desastres naturales con mayor anticipación.",
+            "Alan Turing propuso en 1950 una prueba para saber si una máquina podía 'pensar' como un humano.",
+            "Los modelos de IA ayudan a diagnosticar enfermedades como el cáncer analizando imágenes médicas.",
+            "La IA también se usa para optimizar el uso de agua y fertilizantes en la agricultura.",
+            "Las redes neuronales están inspiradas en cómo funcionan las neuronas del cerebro humano.",
+            "La IA ayuda a modelar escenarios climáticos futuros para diseñar mejores políticas ambientales.",
+        ],
+    },
+    "cine": {
+        "emoji": "🎬",
+        "nombre_visible": "Cine",
+        "preguntas": [
+            {"es": "pelicula", "respuestas": ["movie", "film"], "nivel": "facil"},
+            {"es": "actor", "respuestas": ["actor"], "nivel": "facil"},
+            {"es": "director", "respuestas": ["director"], "nivel": "medio"},
+            {"es": "guion", "respuestas": ["script"], "nivel": "medio"},
+            {"es": "efectos especiales", "respuestas": ["special effects"], "nivel": "dificil"},
+            {"es": "banda sonora", "respuestas": ["soundtrack"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "'El cantor de jazz' (1927) fue la primera película con sonido sincronizado.",
+            "Hollywood recibe su nombre de un rancho donde abundaban los acebos (hollies en inglés).",
+            "Jurassic Park combinó animatronics con los primeros grandes usos de CGI.",
+            "El primer Óscar se entregó en 1929, en una ceremonia de solo 15 minutos.",
+        ],
+    },
+    "musica": {
+        "emoji": "🎵",
+        "nombre_visible": "Música",
+        "preguntas": [
+            {"es": "cancion", "respuestas": ["song"], "nivel": "facil"},
+            {"es": "guitarra", "respuestas": ["guitar"], "nivel": "facil"},
+            {"es": "concierto", "respuestas": ["concert"], "nivel": "medio"},
+            {"es": "ritmo", "respuestas": ["rhythm"], "nivel": "medio"},
+            {"es": "compositor", "respuestas": ["composer"], "nivel": "dificil"},
+            {"es": "instrumento de cuerda", "respuestas": ["string instrument"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Beethoven compuso su Novena Sinfonía estando completamente sordo.",
+            "El piano fue inventado alrededor del año 1700 por Bartolomeo Cristofori.",
+            "Escuchar música puede reducir el estrés y mejorar la memoria.",
+            "El vinilo ha tenido un gran resurgimiento en ventas en la última década.",
+        ],
+    },
+    "comida": {
+        "emoji": "🍔",
+        "nombre_visible": "Comida",
+        "preguntas": [
+            {"es": "manzana", "respuestas": ["apple"], "nivel": "facil"},
+            {"es": "pan", "respuestas": ["bread"], "nivel": "facil"},
+            {"es": "desayuno", "respuestas": ["breakfast"], "nivel": "medio"},
+            {"es": "receta", "respuestas": ["recipe"], "nivel": "medio"},
+            {"es": "ingrediente secreto", "respuestas": ["secret ingredient"], "nivel": "dificil"},
+            {"es": "comida saludable", "respuestas": ["healthy food"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "El chocolate se originó en Mesoamérica, donde se consumía como bebida, no como dulce.",
+            "La papa se originó en los Andes de Sudamérica hace miles de años.",
+            "El café es una de las materias primas más comercializadas del mundo.",
+            "El sushi nació originalmente como un método para conservar pescado, no como comida fresca.",
+        ],
+    },
+    "videojuegos": {
+        "emoji": "🎮",
+        "nombre_visible": "Videojuegos",
+        "preguntas": [
+            {"es": "juego", "respuestas": ["game"], "nivel": "facil"},
+            {"es": "nivel", "respuestas": ["level"], "nivel": "facil"},
+            {"es": "consola", "respuestas": ["console"], "nivel": "medio"},
+            {"es": "puntaje", "respuestas": ["score"], "nivel": "medio"},
+            {"es": "jugador profesional", "respuestas": ["professional player", "pro player"], "nivel": "dificil"},
+            {"es": "mundo abierto", "respuestas": ["open world"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Pac-Man fue diseñado por Toru Iwatani en 1980.",
+            "Minecraft es uno de los videojuegos más vendidos de toda la historia.",
+            "Los eSports mueven torneos con premios de millones de dólares.",
+            "Jugar videojuegos puede mejorar la coordinación y la resolución de problemas.",
+        ],
+    },
+    "idiomas": {
+        "emoji": "🗣",
+        "nombre_visible": "Idiomas",
+        "preguntas": [
+            {"es": "palabra", "respuestas": ["word"], "nivel": "facil"},
+            {"es": "idioma", "respuestas": ["language"], "nivel": "facil"},
+            {"es": "traduccion", "respuestas": ["translation"], "nivel": "medio"},
+            {"es": "pronunciacion", "respuestas": ["pronunciation"], "nivel": "medio"},
+            {"es": "fluidez verbal", "respuestas": ["verbal fluency"], "nivel": "dificil"},
+            {"es": "segundo idioma", "respuestas": ["second language"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "El mandarín es el idioma con más hablantes nativos del mundo.",
+            "El español es idioma oficial en 20 países.",
+            "Hay más de 7,000 idiomas hablados actualmente en el mundo.",
+            "Aprender un segundo idioma mejora funciones cognitivas como la memoria y la atención.",
+        ],
+    },
+    "deportes": {
+        "emoji": "⚽",
+        "nombre_visible": "Deportes",
+        "preguntas": [
+            {"es": "pelota", "respuestas": ["ball"], "nivel": "facil"},
+            {"es": "equipo", "respuestas": ["team"], "nivel": "facil"},
+            {"es": "entrenador", "respuestas": ["coach"], "nivel": "medio"},
+            {"es": "campeonato", "respuestas": ["championship"], "nivel": "medio"},
+            {"es": "trabajo en equipo", "respuestas": ["teamwork"], "nivel": "dificil"},
+            {"es": "resistencia fisica", "respuestas": ["physical endurance"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "El fútbol es el deporte más popular del planeta.",
+            "Los Juegos Olímpicos modernos comenzaron en 1896 en Atenas.",
+            "El baloncesto fue inventado en 1891 por James Naismith.",
+            "El maratón recibe su nombre por la leyenda del mensajero griego Filípides.",
+        ],
+    },
+    "tecnologia": {
+        "emoji": "💻",
+        "nombre_visible": "Tecnología",
+        "preguntas": [
+            {"es": "telefono", "respuestas": ["phone"], "nivel": "facil"},
+            {"es": "internet", "respuestas": ["internet"], "nivel": "facil"},
+            {"es": "aplicacion", "respuestas": ["application", "app"], "nivel": "medio"},
+            {"es": "contrasena", "respuestas": ["password"], "nivel": "medio"},
+            {"es": "computacion en la nube", "respuestas": ["cloud computing"], "nivel": "dificil"},
+            {"es": "ciberseguridad", "respuestas": ["cybersecurity"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Internet se originó como ARPANET en la década de 1960.",
+            "La Ley de Moore predijo que la cantidad de transistores en un chip se duplicaría cada dos años.",
+            "El primer correo electrónico se envió en 1971.",
+            "La computación cuántica promete resolver problemas imposibles para las computadoras actuales.",
+        ],
+    },
+    "animales": {
+        "emoji": "🐾",
+        "nombre_visible": "Animales",
+        "preguntas": [
+            {"es": "perro", "respuestas": ["dog"], "nivel": "facil"},
+            {"es": "gato", "respuestas": ["cat"], "nivel": "facil"},
+            {"es": "elefante", "respuestas": ["elephant"], "nivel": "medio"},
+            {"es": "mariposa", "respuestas": ["butterfly"], "nivel": "medio"},
+            {"es": "especie en peligro", "respuestas": ["endangered species"], "nivel": "dificil"},
+            {"es": "ecosistema marino", "respuestas": ["marine ecosystem"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Los pulpos tienen tres corazones.",
+            "Las abejas polinizan cerca de un tercio de los cultivos que consumimos.",
+            "Los elefantes pueden reconocerse a sí mismos frente a un espejo.",
+            "Los colibríes son las únicas aves capaces de volar hacia atrás.",
+        ],
+    },
+    "geografia": {
+        "emoji": "🗺",
+        "nombre_visible": "Geografía",
+        "preguntas": [
+            {"es": "montana", "respuestas": ["mountain"], "nivel": "facil"},
+            {"es": "rio", "respuestas": ["river"], "nivel": "facil"},
+            {"es": "continente", "respuestas": ["continent"], "nivel": "medio"},
+            {"es": "frontera", "respuestas": ["border"], "nivel": "medio"},
+            {"es": "placa tectonica", "respuestas": ["tectonic plate"], "nivel": "dificil"},
+            {"es": "capa de ozono", "respuestas": ["ozone layer"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "El río Nilo es considerado el más largo del mundo.",
+            "El desierto del Sahara es casi tan grande como todo Estados Unidos.",
+            "Rusia abarca 11 husos horarios distintos.",
+            "El Monte Everest crece unos milímetros cada año por el movimiento de placas tectónicas.",
+        ],
+    },
+    "historia": {
+        "emoji": "📜",
+        "nombre_visible": "Historia",
+        "preguntas": [
+            {"es": "rey", "respuestas": ["king"], "nivel": "facil"},
+            {"es": "guerra", "respuestas": ["war"], "nivel": "facil"},
+            {"es": "imperio", "respuestas": ["empire"], "nivel": "medio"},
+            {"es": "revolucion", "respuestas": ["revolution"], "nivel": "medio"},
+            {"es": "independencia nacional", "respuestas": ["national independence"], "nivel": "dificil"},
+            {"es": "tratado de paz", "respuestas": ["peace treaty"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "La Gran Muralla China se construyó a lo largo de varios siglos y dinastías.",
+            "La imprenta de Gutenberg (siglo XV) revolucionó la difusión del conocimiento.",
+            "Las pirámides de Egipto tienen más de 4,500 años de antigüedad.",
+            "El Imperio Romano duró más de mil años.",
+        ],
+    },
+    "ciencia": {
+        "emoji": "🔬",
+        "nombre_visible": "Ciencia",
+        "preguntas": [
+            {"es": "atomo", "respuestas": ["atom"], "nivel": "facil"},
+            {"es": "celula", "respuestas": ["cell"], "nivel": "facil"},
+            {"es": "experimento", "respuestas": ["experiment"], "nivel": "medio"},
+            {"es": "gravedad", "respuestas": ["gravity"], "nivel": "medio"},
+            {"es": "metodo cientifico", "respuestas": ["scientific method"], "nivel": "dificil"},
+            {"es": "reaccion quimica", "respuestas": ["chemical reaction"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "La luz del sol tarda aproximadamente 8 minutos en llegar a la Tierra.",
+            "El agua es la única sustancia que existe naturalmente en los tres estados en nuestro planeta.",
+            "Einstein publicó su teoría de la relatividad especial en 1905.",
+            "Los átomos están compuestos en su mayoría por espacio vacío.",
+        ],
+    },
+    "viajes": {
+        "emoji": "✈",
+        "nombre_visible": "Viajes",
+        "preguntas": [
+            {"es": "maleta", "respuestas": ["suitcase"], "nivel": "facil"},
+            {"es": "pasaporte", "respuestas": ["passport"], "nivel": "facil"},
+            {"es": "aeropuerto", "respuestas": ["airport"], "nivel": "medio"},
+            {"es": "hotel", "respuestas": ["hotel"], "nivel": "medio"},
+            {"es": "destino turistico", "respuestas": ["tourist destination"], "nivel": "dificil"},
+            {"es": "itinerario de viaje", "respuestas": ["travel itinerary"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Francia es el país más visitado del mundo.",
+            "Japón tiene uno de los sistemas de trenes más puntuales del planeta.",
+            "El primer vuelo comercial de la historia ocurrió en 1914.",
+            "La Gran Barrera de Coral de Australia es tan grande que se puede ver desde el espacio.",
+        ],
+    },
+    "moda": {
+        "emoji": "👗",
+        "nombre_visible": "Moda",
+        "preguntas": [
+            {"es": "camisa", "respuestas": ["shirt"], "nivel": "facil"},
+            {"es": "zapato", "respuestas": ["shoe"], "nivel": "facil"},
+            {"es": "disenador", "respuestas": ["designer"], "nivel": "medio"},
+            {"es": "tendencia", "respuestas": ["trend"], "nivel": "medio"},
+            {"es": "moda sostenible", "respuestas": ["sustainable fashion"], "nivel": "dificil"},
+            {"es": "pasarela de moda", "respuestas": ["fashion runway"], "nivel": "dificil"},
+        ],
+        "datos_curiosos": [
+            "Coco Chanel popularizó el icónico 'vestido negro'.",
+            "Los jeans se inventaron originalmente en 1873 como ropa de trabajo para mineros.",
+            "La industria de la moda es una de las más contaminantes del mundo, lo que impulsó la moda sostenible.",
+            "Las primeras pasarelas de moda surgieron en París en el siglo XIX.",
+        ],
+    },
+}
+
+
+# ============================================================
+# 3. UTILIDADES DE TEXTO Y VALIDACION FLEXIBLE
+# ============================================================
+
+def normalizar(texto):
+    """Minusculas, sin tildes y sin signos de puntuacion."""
+    texto = texto.lower().strip()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = texto.encode("ascii", "ignore").decode("utf-8")
+    texto = re.sub(r"[^a-z0-9\s]", "", texto)
+    return texto
+
+
+def quitar_relleno(texto_normalizado):
+    """Quita palabras de relleno para que 'its wednesday'
+    y 'wednesday' se comparen como lo mismo."""
+    palabras = texto_normalizado.split()
+    limpio = []
+    for p in palabras:
+        if p not in PALABRAS_RELLENO:
+            limpio.append(p)
+    if len(limpio) == 0:
+        return texto_normalizado
+    return " ".join(limpio)
+
+
+def parecido(a, b, umbral=0.8):
+    return difflib.SequenceMatcher(None, a, b).ratio() >= umbral
+
+
+def es_respuesta_correcta(texto_reconocido, respuestas_aceptadas, palabra_original_es):
+    """Valida la respuesta de forma flexible:
+    1) Alguna respuesta valida esta contenida en lo que dijo el jugador.
+    2) Se parece lo suficiente (tolera errores de transcripcion).
+    3) Ultimo recurso: traducir lo dicho al espanol con googletrans
+       y compararlo con la palabra original."""
+    texto_limpio = quitar_relleno(normalizar(texto_reconocido))
+
+    for respuesta in respuestas_aceptadas:
+        respuesta_norm = quitar_relleno(normalizar(respuesta))
+        if respuesta_norm in texto_limpio or parecido(respuesta_norm, texto_limpio):
+            return True
+
+    try:
+        resultado = translator.translate(texto_limpio, src="en", dest="es")
+        retrotraduccion = normalizar(resultado.text)
+        if parecido(retrotraduccion, normalizar(palabra_original_es), 0.75):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+# ============================================================
+# 4. AUDIO: GRABAR Y RECONOCER
+# ============================================================
+
+def grabar_audio(nombre_archivo="respuesta.wav"):
+    print(c("\n🎙  ¡Habla ahora! Grabando...", C.CIAN))
+    try:
+        grabacion = sd.rec(
+            int(DURATION * SAMPLE_RATE),
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+        )
+        sd.wait()
+        wav.write(nombre_archivo, SAMPLE_RATE, grabacion)
+    except Exception as error:
+        print(c("⚠  No se pudo usar el microfono: " + str(error), C.AMARILLO))
+        return None
+    print(c("✅ Grabación completa.", C.VERDE))
+    return nombre_archivo
+
+
+def reconocer_habla(nombre_archivo):
+    if nombre_archivo is None:
+        return None
+
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(nombre_archivo) as source:
+        audio = recognizer.record(source)
+
+    try:
+        texto = recognizer.recognize_google(audio, language="en-US")
+        print(c('🗣  Escuché: "' + texto + '"', C.GRIS))
+        return texto
+    except sr.UnknownValueError:
+        print(c("❌ No se pudo reconocer el habla (silencio o ruido).", C.ROJO))
+        return None
+    except sr.RequestError as error:
+        print(c("⚠  Error del servicio de reconocimiento: " + str(error), C.AMARILLO))
+        return None
+
+
+# ============================================================
+# 5. SELECCION DE TEMA, PREGUNTA Y DATO CURIOSO
+# ============================================================
+
+def elegir_tema():
+    claves = list(TEMAS.keys())
+    print(c("\n📚 Elige un tema:", C.BOLD + C.AZUL))
+    numero = 1
+    for clave in claves:
+        info = TEMAS[clave]
+        linea = "  " + str(numero).rjust(2) + ".  " + info["emoji"] + "  " + info["nombre_visible"]
+        print(linea)
+        numero = numero + 1
+
+    while True:
+        eleccion = input(c("👉 Ingresa el número de tu tema: ", C.AMARILLO)).strip()
+        if eleccion.isdigit() and 1 <= int(eleccion) <= len(claves):
+            return claves[int(eleccion) - 1]
+        print(c("⚠  Opción inválida, intenta de nuevo.", C.ROJO))
+
+
+def elegir_dificultad():
+    print(c("\n📊 Elige un nivel de dificultad:", C.BOLD + C.AZUL))
+    print("  1.  Fácil   (10 pts por palabra)")
+    print("  2.  Medio   (20 pts por palabra)")
+    print("  3.  Difícil (30 pts por palabra)")
+    opciones = {"1": "facil", "2": "medio", "3": "dificil"}
+
+    while True:
+        eleccion = input(c("👉 Ingresa el número de tu opción: ", C.AMARILLO)).strip()
+        if eleccion in opciones:
+            return opciones[eleccion]
+        print(c("⚠  Opción inválida, intenta de nuevo.", C.ROJO))
+
+
+def elegir_pregunta(tema, nivel, usadas):
+    del_nivel = []
+    for p in TEMAS[tema]["preguntas"]:
+        if p["nivel"] == nivel:
+            del_nivel.append(p)
+
+    disponibles = []
+    for p in del_nivel:
+        if p["es"] not in usadas:
+            disponibles.append(p)
+
+    if len(disponibles) == 0:
+        usadas.clear()
+        disponibles = del_nivel
+
+    pregunta = random.choice(disponibles)
+    usadas.add(pregunta["es"])
+    return pregunta
+
+
+def mostrar_dato_curioso(tema, datos_usados):
+    datos = TEMAS[tema]["datos_curiosos"]
+    disponibles = []
+    for d in datos:
+        if d not in datos_usados:
+            disponibles.append(d)
+
+    if len(disponibles) == 0:
+        datos_usados.clear()
+        disponibles = datos
+
+    dato = random.choice(disponibles)
+    datos_usados.add(dato)
+    print(c("\n💡 ¿Sabías qué? " + dato, C.MAGENTA))
+
+
+# ============================================================
+# 6. INTERFAZ Y PUNTAJES
+# ============================================================
+
+def mostrar_banner():
+    print(c("", C.RESET))
+    print(c("    🌎🤖  ECOMIND VOICE CHALLENGE  🤖🌎", C.BOLD + C.VERDE))
+    print(c("    ------------------------------------", C.VERDE))
+    print(c("    Say it in English... if you can!", C.VERDE))
+    print()
+
+
+def mostrar_vidas(vidas):
+    corazones = "❤ " * vidas + "🖤 " * (MAX_ERRORES - vidas)
+    print("Vidas: " + corazones)
+
+
+def guardar_puntaje(nombre, puntaje, tema, nivel):
+    fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
+    linea = "{} | {} | tema={} | nivel={} | puntaje={}\n".format(
+        fecha, nombre, tema, nivel, puntaje
+    )
+    with open(ARCHIVO_PUNTAJES, "a", encoding="utf-8") as archivo:
+        archivo.write(linea)
+
+
+def mostrar_top_puntajes(tema_filtro=None, top=5):
+    if not os.path.exists(ARCHIVO_PUNTAJES):
+        return
+
+    if tema_filtro:
+        titulo = "🏆 TOP PUNTAJES - " + tema_filtro.upper() + " 🏆"
+    else:
+        titulo = "🏆 TOP PUNTAJES GENERALES 🏆"
+
+    print(c("\n" + titulo, C.BOLD + C.AMARILLO))
+    print(c("-" * 45, C.GRIS))
+
+    filas = []
+    with open(ARCHIVO_PUNTAJES, "r", encoding="utf-8") as archivo:
+        for linea in archivo:
+            if tema_filtro and ("tema=" + tema_filtro + " ") not in linea:
+                continue
+            try:
+                puntaje = int(linea.strip().split("puntaje=")[1])
+                filas.append((puntaje, linea.strip()))
+            except (IndexError, ValueError):
+                continue
+
+    filas.sort(reverse=True, key=lambda fila: fila[0])
+
+    if len(filas) == 0:
+        print(c("(Todavía no hay puntajes para este tema)", C.GRIS))
+
+    for fila in filas[:top]:
+        print(fila[1])
+
+    print(c("-" * 45, C.GRIS))
+
+
+# ============================================================
+# 7. LOGICA PRINCIPAL DEL JUEGO
+# ============================================================
+
+def jugar():
+    mostrar_banner()
+    nombre = input(c("👤 ¿Cuál es tu nombre? ", C.AMARILLO)).strip()
+    if nombre == "":
+        nombre = "Jugador"
+
+    tema = elegir_tema()
+    nivel = elegir_dificultad()
+
+    puntaje = 0
+    vidas = MAX_ERRORES
+    racha = 0
+    preguntas_usadas = set()
+    datos_usados = set()
+    ronda = 1
+
+    info_tema = TEMAS[tema]
+    print(c(
+        "\n🎬 ¡Comienza el juego, {}! Tema: {} {} | Nivel: {}".format(
+            nombre, info_tema["emoji"], info_tema["nombre_visible"], NOMBRES_NIVEL[nivel]
+        ),
+        C.BOLD,
+    ))
+    print("Vas a ver una palabra o frase en español. Dila en inglés cuando se te indique.\n")
+
+    while vidas > 0:
+        pregunta = elegir_pregunta(tema, nivel, preguntas_usadas)
+
+        print(c("=" * 48, C.GRIS))
+        print("Ronda " + str(ronda) + "  |  Puntaje: " + c(puntaje, C.AMARILLO))
+        mostrar_vidas(vidas)
+        print(c("\n📝 Palabra/frase: " + pregunta["es"].upper(), C.BOLD + C.CIAN))
+        input(c("Presiona ENTER cuando estés listo para hablar... ", C.GRIS))
+
+        archivo_audio = grabar_audio()
+        texto_reconocido = reconocer_habla(archivo_audio)
+
+        acierto = False
+        if texto_reconocido:
+            acierto = es_respuesta_correcta(
+                texto_reconocido, pregunta["respuestas"], pregunta["es"]
+            )
+
+        if acierto:
+            racha = racha + 1
+            bono_racha = 0
+            if racha > 1:
+                bono_racha = 5 * (racha - 1)
+            puntos_ronda = PUNTOS_POR_NIVEL[nivel] + bono_racha
+            puntaje = puntaje + puntos_ronda
+
+            mensaje = "✅ ¡Correcto! +" + str(puntos_ronda) + " pts"
+            if bono_racha > 0:
+                mensaje = mensaje + " (🔥 bono de racha x" + str(racha) + ": +" + str(bono_racha) + ")"
+            print(c(mensaje, C.VERDE))
+        else:
+            vidas = vidas - 1
+            racha = 0
+            respuesta_correcta = pregunta["respuestas"][0]
+            print(c('❌ Incorrecto. La traducción correcta era: "' + respuesta_correcta + '"', C.ROJO))
+
+        mostrar_dato_curioso(tema, datos_usados)
+        ronda = ronda + 1
+        print()
+
+    print(c("\n💀 ¡GAME OVER! 💀", C.BOLD + C.ROJO))
+    print(c(
+        "🎯 Puntaje final de {}: {} pts | Tema: {} | Nivel: {}".format(
+            nombre, puntaje, info_tema["nombre_visible"], NOMBRES_NIVEL[nivel]
+        ),
+        C.BOLD,
+    ))
+
+    guardar_puntaje(nombre, puntaje, tema, nivel)
+    mostrar_top_puntajes(tema_filtro=tema)
+    mostrar_top_puntajes()
+
+
+def main():
+    seguir = True
+    while seguir:
+        jugar()
+        de_nuevo = input(c("\n¿Quieres jugar otra vez? (s/n): ", C.AMARILLO)).strip().lower()
+        if de_nuevo != "s":
+            seguir = False
+
+    print(c("\n👋 ¡Gracias por jugar! See you next time!", C.VERDE))
+
+
+if __name__ == "__main__":
+    main()
