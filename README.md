@@ -1,3 +1,7 @@
+<img width="383" height="101" alt="Captura de pantalla 2026-10-23 140227" src="https://github.com/user-attachments/assets/4079e26c-f620-4e9c-8584-60ff059eb6cf" />
+<img width="391" height="153" alt="Captura de pantalla 2026-10-23 140214" src="https://github.com/user-attachments/assets/1464b290-585a-40bd-a5a7-5714e0f00b76" />
+<img width="406" height="147" alt="Captura de pantalla 2026-10-23 140159" src="https://github.com/user-attachments/assets/9cdc9e89-c07f-474e-9947-709a493fb10e" />
+<img width="378" height="105" alt="Captura de pantalla 2026-10-23 140257" src="https://github.com/user-attachments/assets/7e9599db-ff70-485e-a89a-a83aeb5a4a00" />
 # Juego-por-voz
 EcoMind Voice Challenge
 
